@@ -36,10 +36,12 @@ export async function startHookServer(ctx: Ctx): Promise<{ hookServer: http.Serv
     const token = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
     const workerId = url.searchParams.get('worker') ?? '';
     const workers = ctx.workerFloor(workerId)?.workers;
-    if (!workers) return send(res, 401, {});
+    // During a safe office restart the hook server is listening before persistent workers have
+    // reattached. 503 tells blocking provider helpers to retry the same correlated request.
+    if (!workers) return send(res, 503, {});
     const event = url.searchParams.get('event') ?? '';
-    const ok = workers.handleProviderHook(route as AgentProvider, workerId, token, event, payload);
-    send(res, ok ? 200 : 401, {});
+    const result = await workers.handleProviderRequest(route as AgentProvider, workerId, token, event, payload);
+    send(res, result.ok ? 200 : 401, result.output ?? {});
   });
   // Workers' terminals outlive a restart of the office (see ptys.ts) with this address in their
   // environment, so listen where the last office did when that port is free.

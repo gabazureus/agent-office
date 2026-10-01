@@ -117,6 +117,11 @@ export async function openFloors(ctx: Ctx, hookPort: number): Promise<FloorsOpen
     },
     lent: (floor) => [...floors.values()].some((f) => f !== floor && worksIn(f, floor)),
     locksUp: () => !!ctx.maps.plan().sendHome?.keeps,
+    interact: async (floor, worker, request) => {
+      const response = await ctx.interactions.request({ worker, floorId: floor.id, floorName: floor.def.name }, request);
+      return request.respond(response);
+    },
+    cancelInteractions: (workerId) => ctx.interactions.expireWorker(workerId, 'cancelled'),
     runAs: ctx.signins,
     ghAs: (owner) => (owner ? ctx.signins.ghAs(owner) : undefined),
   };

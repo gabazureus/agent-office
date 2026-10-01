@@ -13,6 +13,7 @@ import { scoreText } from '../../shared/cabinet.js';
 import { cabinetChanged } from '../ws/handlers/cabinet.js';
 import type { Core, Ctx } from './context.js';
 import type { Client } from './client.js';
+import { InteractionCenter } from '../interactions.js';
 
 /** The first of the office: accounts and sign-in, the people in it, chat, the arcade, and the building's floors. */
 export function createCore(ctx: Ctx, cfg: Config, publicDir: string): Core {
@@ -45,5 +46,10 @@ export function createCore(ctx: Ctx, cfg: Config, publicDir: string): Core {
     if (err) console.error(`agent-office: --projects: ${err}`);
   }
   const floors = new Map<string, Floor>();
-  return { cfg, publicDir, accounts, auth, clients, chat, highScores, arcade, officeName, openCodeModels, grokModels, building, floors };
+  const interactions = new InteractionCenter(
+    cfg.dataDir,
+    (interaction) => ctx.broadcast({ t: 'interaction.upsert', interaction }),
+    (id, status) => ctx.broadcast({ t: 'interaction.remove', id, status }),
+  );
+  return { cfg, publicDir, accounts, auth, clients, chat, highScores, arcade, officeName, openCodeModels, grokModels, building, floors, interactions };
 }

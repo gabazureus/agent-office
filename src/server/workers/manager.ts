@@ -554,30 +554,12 @@ export class WorkerManager {
     this.emitUpdate(w);
   }
 
-  /** Claude Code hook callback (a custom --agent that speaks Claude Code's hooks reports here too). */
-  handleHook(workerId: string, token: string, event: string, payload: any): boolean {
-    return this.handleProviderHook('claude', workerId, token, event, payload);
-  }
-
-  /** Native Codex lifecycle hooks register the root rollout for bounded metric reads. */
-  handleCodexHook(workerId: string, token: string, event: string, payload: unknown): boolean {
-    return this.handleProviderHook('codex', workerId, token, event, payload);
-  }
-
-  /** Grok lifecycle hooks, isolated under the office's GROK_HOME so they never edit ~/.grok. */
-  handleGrokHook(workerId: string, token: string, event: string, payload: unknown): boolean {
-    return this.handleProviderHook('grok', workerId, token, event, payload);
-  }
-
-  /** Muse lifecycle hooks, isolated under the office's XDG dirs so they never edit ~/.config/muse. */
-  handleMuseHook(workerId: string, token: string, event: string, payload: unknown): boolean {
-    return this.handleProviderHook('muse', workerId, token, event, payload);
-  }
-
-  /** OpenCode plugin callback. The plugin has already filtered child sessions before this bridge. */
-  handleOpenCodeHook(workerId: string, token: string, payload: unknown): boolean {
-    return this.handleProviderHook('opencode', workerId, token, '', payload);
-  }
+  /** Provider-specific compatibility entry points. */
+  handleHook(id: string, token: string, event: string, payload: any): boolean { return this.handleProviderHook('claude', id, token, event, payload); }
+  handleCodexHook(id: string, token: string, event: string, payload: unknown): boolean { return this.handleProviderHook('codex', id, token, event, payload); }
+  handleGrokHook(id: string, token: string, event: string, payload: unknown): boolean { return this.handleProviderHook('grok', id, token, event, payload); }
+  handleMuseHook(id: string, token: string, event: string, payload: unknown): boolean { return this.handleProviderHook('muse', id, token, event, payload); }
+  handleOpenCodeHook(id: string, token: string, payload: unknown): boolean { return this.handleProviderHook('opencode', id, token, '', payload); }
 
   /**
    * An event on the hook route /hooks/`route` (see ProviderAdapter.hook): taken only from a running
@@ -591,10 +573,23 @@ export class WorkerManager {
     return hook.handle(this.handleOf(w), event, payload);
   }
 
-  /**
-   * The office is closing. On a restart (`keep`), terminals in the host keep running for the next
-   * office to pick back up; otherwise every worker stops.
-   */
+  async handleProviderRequest(route: AgentProvider, workerId: string, token: string, event: string, payload: unknown): Promise<{ ok: boolean; output?: unknown }> {
+    const hook = providerAdapter(route)?.hook;
+    const w = this.workers.get(workerId);
+    const own = w && providerAdapter(w.info.provider);
+    if (!hook || !w || !w.pty || w.info.kind !== 'agent' || !own || (own.hooksAs ?? own.id) !== route || !safeEq(token, w.hookToken)) return { ok: false };
+    if (!hook.handle(this.handleOf(w), event, payload)) return { ok: false };
+    const draft = hook.interaction?.(this.handleOf(w), event, payload);
+    if (!draft) return { ok: true };
+    if (draft.kind === 'unsupported') {
+      void this.events.interact?.({ ...w.info }, draft).catch(() => {});
+      return { ok: true };
+    }
+    const output = await this.events.interact?.({ ...w.info }, draft);
+    return { ok: true, output };
+  }
+
+  /** On restart, terminal-host workers keep running for the next office. */
   shutdown(keep = false) {
     this.closing = true;
     this.stopping = !keep;
@@ -803,6 +798,7 @@ export class WorkerManager {
       }
       // The terminal host died and took the process with it: nothing the worker did.
       if (lost && !this.closing) {
+        this.events.cancelInteractions?.(info.id);
         if (midTurn(w)) w.interrupted = true;
         this.resume(info.id);
         return;
@@ -816,6 +812,7 @@ export class WorkerManager {
         return;
       }
       info.exitCode = exitCode;
+      this.events.cancelInteractions?.(info.id);
       clockWork(info, 'exited');
       info.status = 'exited';
       const hint = info.kind === 'shell' ? ' — press R to restart' : info.sessionId ? ' — press R to resume' : '';
@@ -841,6 +838,7 @@ export class WorkerManager {
   }
 
   private startFailed(w: Worker, message: string) {
+    this.events.cancelInteractions?.(w.info.id);
     const what = this.command(w.info);
     const msg = `\r\n\x1b[31mFailed to start ${what}: ${message}\x1b[0m\r\n`;
     clockWork(w.info, 'exited');

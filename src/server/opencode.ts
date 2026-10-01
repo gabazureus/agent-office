@@ -13,6 +13,11 @@ export interface OpenCodeStatusEvent {
   prompt?: string;
   tool?: string;
   detail?: string;
+  requestId?: string;
+  permission?: string;
+  patterns?: string[];
+  metadata?: Record<string, unknown>;
+  questions?: unknown[];
 }
 
 export interface OpenCodeUsageEvent {
@@ -84,16 +89,21 @@ export const OPENCODE_PLUGIN_SOURCE = String.raw`export default async function A
     queued = queued.then(job).catch(() => {});
     return queued;
   }
-  async function send(value) {
+  async function send(value, blocking = false) {
     if (!value) return;
-    try {
-      await fetch(url + "/hooks/opencode?worker=" + encodeURIComponent(worker), {
-        method: "POST",
-        headers: { authorization: "Bearer " + token, "content-type": "application/json" },
-        body: JSON.stringify(value),
-        signal: AbortSignal.timeout(2500),
-      });
-    } catch {}
+    for (;;) {
+      try {
+        const response = await fetch(url + "/hooks/opencode?worker=" + encodeURIComponent(worker), {
+          method: "POST",
+          headers: { authorization: "Bearer " + token, "content-type": "application/json" },
+          body: JSON.stringify(value),
+          ...(blocking ? {} : { signal: AbortSignal.timeout(2500) }),
+        });
+        if (response.ok) return await response.json().catch(() => ({}));
+        if (!blocking || response.status !== 503) return;
+      } catch { if (!blocking) return; }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
   }
   function detail(value) {
     return typeof value === "string" && value.trim() ? value.trim().slice(0, 500) : undefined;
@@ -269,7 +279,11 @@ export const OPENCODE_PLUGIN_SOURCE = String.raw`export default async function A
       const kind = event.type.split(".")[0];
       pending.add(kind + ":" + p.id);
       const q = Array.isArray(p.questions) ? p.questions[0] : undefined;
-      return { ...base, type: kind, status: "needs_input", detail: detail(q?.question || q?.header || p.title || p.permission) };
+      return {
+        ...base, type: kind, status: "needs_input", requestId: p.id,
+        detail: detail(q?.question || q?.header || p.title || p.permission),
+        ...(kind === "permission" ? { permission: detail(p.permission), patterns: Array.isArray(p.patterns) ? p.patterns.slice(0, 20) : [], metadata: p.metadata } : { questions: p.questions }),
+      };
     }
     if (["permission.replied", "question.replied", "question.rejected"].includes(event.type)) {
       pending.delete(event.type.split(".")[0] + ":" + p.requestID);
@@ -281,7 +295,18 @@ export const OPENCODE_PLUGIN_SOURCE = String.raw`export default async function A
     void hydrate(rootSession, usageEpoch);
   }
   return {
-    event: ({ event }) => enqueue(() => send(compact(event))),
+    event: ({ event }) => enqueue(async () => {
+      const payload = compact(event);
+      const interactive = payload && (payload.type === "permission" || payload.type === "question") && payload.requestId;
+      const response = await send(payload, !!interactive);
+      if (!interactive || !response || !client) return;
+      if (payload.type === "permission" && client.permission && typeof client.permission.reply === "function" && ["once", "always", "reject"].includes(response.reply)) {
+        await client.permission.reply({ path: { requestID: payload.requestId }, body: { reply: response.reply } });
+      } else if (payload.type === "question" && client.question) {
+        if (response.reject && typeof client.question.reject === "function") await client.question.reject({ path: { requestID: payload.requestId } });
+        else if (Array.isArray(response.answers) && typeof client.question.reply === "function") await client.question.reply({ path: { requestID: payload.requestId }, body: { answers: response.answers } });
+      }
+    }),
     "chat.message": (input, output) => enqueue(async () => {
       if (typeof input.sessionID !== "string" || !await selectExisting(input.sessionID)) return;
       const parts = output && Array.isArray(output.parts) ? output.parts : [];

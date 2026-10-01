@@ -7,6 +7,7 @@ import type { Pty } from '../ptys.js';
 import type { UsageTracker } from '../usage.js';
 import type { Worktrees } from '../worktrees.js';
 import type { HeadlessTerminal } from './terminal.js';
+import type { ProviderInteractionDraft } from '../interactions.js';
 
 export type Worktree = NonNullable<WorkerInfo['worktree']>;
 
@@ -110,6 +111,10 @@ export interface WorkerEvents {
   data(workerId: string, data: string, viewers: string[]): void;
   screen(workerId: string, frame: { cols: number; rows: number; lines: Record<number, Run[]>; full: boolean; cursor: [number, number] }): void;
   toast(text: string, level: 'info' | 'warn' | 'error'): void;
+  /** A structured provider callback waits here until a browser answers it. */
+  interact?(info: WorkerInfo, request: ProviderInteractionDraft): Promise<unknown>;
+  /** No active callback may remain actionable after this worker is gone. */
+  cancelInteractions?(workerId: string): void;
 }
 
 /**

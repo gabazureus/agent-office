@@ -22,7 +22,7 @@ test('normalizes bounded root Codex hook payloads and passes only the metric rea
   }), { sessionId: 'thread-1', event: 'UserPromptSubmit', prompt: 'fix the login', turnId: 'turn-2' });
   assert.deepEqual(normalizeCodexHook('PermissionRequest', {
     session_id: 'thread-1', tool_name: 'Bash', tool_use_id: 'tool-1', tool_input: { command: 'secret' },
-  }), { sessionId: 'thread-1', event: 'PermissionRequest', tool: 'Bash', toolUseId: 'tool-1' });
+  }), { sessionId: 'thread-1', event: 'PermissionRequest', tool: 'Bash', toolUseId: 'tool-1', toolInput: { command: 'secret' } });
 });
 
 test('rejects unknown, malformed, empty, oversized, and child-scoped events', () => {
@@ -42,7 +42,7 @@ test('generates one stable CLI hook override per supported event', () => {
     assert.equal(args[i * 2], '-c');
     assert.match(args[i * 2 + 1], new RegExp(`^hooks\\.${CODEX_HOOK_EVENTS[i]}=\\[\\{hooks=`));
     assert.match(args[i * 2 + 1], /type="command"/);
-    assert.match(args[i * 2 + 1], /timeout=3/);
+    assert.match(args[i * 2 + 1], new RegExp(`timeout=${['PermissionRequest', 'PreToolUse'].includes(CODEX_HOOK_EVENTS[i]) ? 86400 : 3}`));
     assert.match(args[i * 2 + 1], /agent-office-codex-hook\.cjs/);
   }
 });

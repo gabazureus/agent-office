@@ -27,6 +27,7 @@ import { landedWork, landedWorkers, type Landed } from './leave-on-merge.js';
 import type { Ledger } from './usage.js';
 import type { Capacity } from './machine.js';
 import { officePrompt, type PromptSource } from './prompts.js';
+import type { ProviderInteractionDraft } from './interactions.js';
 
 type ToastLevel = 'info' | 'warn' | 'error';
 
@@ -70,6 +71,9 @@ export interface FloorContext {
   lent(floor: Floor): boolean;
   /** Whether the building's map locks up workers sent home (see MapPlan.sendHome), instead of letting them go. */
   locksUp(): boolean;
+  /** Wait for a browser to answer a provider's structured callback. */
+  interact(floor: Floor, worker: WorkerInfo, request: ProviderInteractionDraft): Promise<unknown>;
+  cancelInteractions(workerId: string): void;
 }
 
 /** The open pull request on a floor's board whose head is `branch`. */
@@ -184,6 +188,7 @@ export class Floor {
           this.sendLandedHome();
         },
         remove: (workerId, info) => {
+          ctx.cancelInteractions(workerId);
           this.changes?.forget(workerId);
           // Sent home on a map that locks workers up: into the dungeon with it, for good (a meeting's
           // workers aren't sent home when it's over, just let go).
@@ -197,6 +202,8 @@ export class Floor {
         data: (workerId, data, viewers) => ctx.termData(workerId, data, viewers),
         screen: (workerId, frame) => ctx.emit(this, { t: 'screen', workerId, ...frame }, true),
         toast: (text, level) => ctx.toast(this, text, level),
+        interact: (worker, request) => ctx.interact(this, worker, request),
+        cancelInteractions: (workerId) => ctx.cancelInteractions(workerId),
       },
       ctx.ledger,
       ctx.capacity,

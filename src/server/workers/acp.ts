@@ -1,6 +1,7 @@
 // A worker that runs over ACP rather than in a terminal (DeepSeek Harness, see ProviderAdapter.transport):
 // the office holds the connection and draws what it says into the worker's terminal itself.
-import { DshSession, terminalSafe } from '../dsh.js';
+import { DshSession, terminalSafe, type DshPermissionOption } from '../dsh.js';
+import { interactionResource, safeInteractionText, type ProviderInteractionDraft } from '../interactions.js';
 import type { HeadlessTerminal } from './terminal.js';
 import type { Worker, WorkerContext } from './types.js';
 import { truncate } from './util.js';
@@ -57,11 +58,44 @@ export function launchAcp(ctx: WorkerContext, w: Worker, term: HeadlessTerminal,
         ctx.notePrompt(w, text);
         ctx.emit(w);
       },
+      permission: async (id, params, options) => {
+        if (w.dsh !== session) return undefined;
+        const request = dshPermission(info, session.id, id, params, options);
+        if (!ctx.events.interact) return new Promise<string | undefined>(() => {});
+        return (await ctx.events.interact({ ...info }, request)) as string | undefined;
+      },
+      permissionClosed: () => ctx.events.cancelInteractions?.(info.id),
       exit: (code, error, quiet) => acpExited(ctx, w, session, term, code, error, quiet),
     },
   );
   w.dsh = session;
   session.start();
+}
+
+function dshPermission(info: Worker['info'], sessionId: string | undefined, id: unknown, params: unknown, options: DshPermissionOption[]): ProviderInteractionDraft {
+  const data = params && typeof params === 'object' && !Array.isArray(params) ? params as Record<string, unknown> : {};
+  const toolCall = data.toolCall && typeof data.toolCall === 'object' && !Array.isArray(data.toolCall) ? data.toolCall as Record<string, unknown> : {};
+  const title = safeInteractionText(toolCall.title ?? toolCall.name, 160) || 'Tool';
+  const input = toolCall.rawInput && typeof toolCall.rawInput === 'object' && !Array.isArray(toolCall.rawInput) ? toolCall.rawInput as Record<string, unknown> : {};
+  const resource = interactionResource(title, input);
+  const choices = options.map((option) => ({
+    id: option.optionId,
+    label: option.name,
+    description: option.once ? 'This choice applies only to the current request.' : `Provider scope: ${option.kind}`,
+    intent: /reject|deny/.test(option.kind) ? 'deny' as const : /cancel/.test(option.kind) ? 'cancel' as const : 'approve' as const,
+    risk: /reject|deny|cancel/.test(option.kind) ? 'safe' as const : 'caution' as const,
+  }));
+  return {
+    correlationId: `${sessionId ?? info.sessionId ?? 'starting'}:${JSON.stringify(id)}`,
+    kind: 'permission',
+    title: `${title} needs permission`,
+    prompt: `Allow DeepSeek Harness to run ${title}?`,
+    description: 'This is the native ACP permission request and its exact advertised choices.',
+    resource,
+    impact: resource,
+    options: choices,
+    respond: (response) => response.optionId,
+  };
 }
 
 /** A DeepSeek Harness child ended: while the office is up, its desk says so and R resumes it. */
@@ -72,6 +106,7 @@ function acpExited(ctx: WorkerContext, w: Worker, session: DshSession, term: Hea
   // The office is going down: the next office marks this worker offline and resumes it, so its
   // status must stay as it was (see the restart difference in docs/dsh-acp-integration.md).
   if (quiet || ctx.closing) return;
+  ctx.events.cancelInteractions?.(info.id);
   const note = error ? `\r\n\x1b[31m[DeepSeek Harness: ${terminalSafe(truncate(error, 300)).replace(/\n/g, ' ')}]\x1b[0m\r\n` : '';
   if (note) {
     term.write(note);

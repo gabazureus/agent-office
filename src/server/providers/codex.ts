@@ -8,6 +8,8 @@ import { codexMcpArgs } from '../office-workers.js';
 import { reduceLifecycle, type ToolTracker } from '../workers/lifecycle.js';
 import type { WorkerHandle } from '../workers/types.js';
 import type { ProviderAdapter } from './types.js';
+import { createHash } from 'node:crypto';
+import { interactionResource, redactInteractionText, type ProviderInteractionDraft } from '../interactions.js';
 
 interface CodexState {
   usage: CodexUsageReader;
@@ -24,6 +26,60 @@ interface CodexState {
 interface CodexSetup {
   hook: string;
   mcpScript?: string;
+}
+
+const rec = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+const valueText = (value: unknown): string | undefined => (typeof value === 'string' && value.trim() ? value.trim() : undefined);
+
+/** Codex's native PermissionRequest hook supports exactly one-shot allow or deny today. */
+export function codexInteraction(event: string, payload: unknown): ProviderInteractionDraft | undefined {
+  if (!rec(payload) || valueText(payload.agent_id) || valueText(payload.agent_type)) return undefined;
+  const session = valueText(payload.session_id);
+  const tool = valueText(payload.tool_name);
+  if (!session || !tool) return undefined;
+  const input = rec(payload.tool_input) ? payload.tool_input : {};
+  const toolUseId = valueText(payload.tool_use_id);
+  const correlation = `${session}:${toolUseId ?? createHash('sha256').update(JSON.stringify([tool, input])).digest('hex').slice(0, 24)}`;
+  if (event === 'PreToolUse' && /(?:^|[._])request_user_input$/.test(tool) && Array.isArray(input.questions)) {
+    const first = input.questions.find(rec);
+    return {
+      correlationId: correlation,
+      kind: 'unsupported',
+      title: 'Codex is asking a question',
+      prompt: redactInteractionText(first?.question ?? first?.prompt, 2_000) ?? 'Codex needs structured user input.',
+      description: 'The Codex CLI hook reports request_user_input but has no callback contract for returning the selected answer. Answer this request in the worker terminal.',
+      options: [],
+      timeoutMs: 5 * 60_000,
+      respond: () => ({}),
+    };
+  }
+  if (event !== 'PermissionRequest') return undefined;
+  const resource = interactionResource(tool, input);
+  return {
+    correlationId: correlation,
+    kind: 'approval',
+    title: `${tool} needs approval`,
+    prompt: valueText(input.description) ?? `Allow Codex to use ${tool}?`,
+    description: 'Codex supports one-shot allow or deny for this native hook request.',
+    resource,
+    impact: resource,
+    risk: resource && /(?:rm\s+-rf|git\s+(?:reset\s+--hard|clean\s+-f)|drop\s+(?:table|database)|destroy|delete)/i.test(resource)
+      ? 'Potentially destructive operation. Review the exact command or resource before allowing.'
+      : undefined,
+    options: [
+      { id: 'allow', label: 'Allow once', description: 'Allow only this request.', intent: 'approve', risk: 'caution' },
+      { id: 'deny', label: 'Deny', description: 'Refuse this request and let Codex continue.', intent: 'deny' },
+    ],
+    respond(response) {
+      const allow = response.optionId === 'allow';
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PermissionRequest',
+          decision: { behavior: allow ? 'allow' : 'deny', ...(!allow ? { message: 'Denied in Agent Office' } : {}) },
+        },
+      };
+    },
+  };
 }
 
 /** Where a Codex worker's sessions are logged, for reading its usage. */
@@ -98,7 +154,7 @@ export const codex: ProviderAdapter<CodexState, CodexSetup> = {
     return { args, rotateToken: true };
   },
   bootHint: 'Open the terminal: complete login and review Office hooks in /hooks',
-  hook: { strictJson: true, handle: codexHook },
+  hook: { strictJson: true, handle: codexHook, interaction: (_h, event, payload) => codexInteraction(event, payload) },
   usage: {
     persisted: true,
     scanOnExit: true,

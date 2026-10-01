@@ -713,16 +713,14 @@ export interface DshLaunch {
 }
 
 export interface DshEvents {
-  /** ANSI text for the worker's terminal. */
   output(text: string): void;
   status(status: WorkerStatus): void;
   action(action: WorkerAction | undefined): void;
   usage(usage: Usage): void;
-  /** The session id the agent handed back, for the worker's card and for resume. */
   session(sessionId: string): void;
-  /** A prompt someone typed into the terminal, for the worker's task card. */
   prompted(text: string): void;
-  /** The child process ended. `quiet` marks a close the office asked for. */
+  permission?(id: unknown, params: unknown, options: DshPermissionOption[]): Promise<string | undefined>;
+  permissionClosed?(): void;
   exit(code: number | null, error: string | undefined, quiet: boolean): void;
 }
 
@@ -1023,6 +1021,7 @@ export class DshSession {
     const permission = this.permission;
     if (!permission) return;
     this.permission = undefined;
+    this.events.permissionClosed?.();
     const outcome = cancelled || !optionId ? { outcome: 'cancelled' } : { outcome: 'selected', optionId };
     this.send({ jsonrpc: '2.0', id: permission.id, result: { outcome } });
     const label = cancelled || !optionId ? 'permission cancelled' : `permission answered: ${oneLine(optionId, 80)}`;
@@ -1038,6 +1037,7 @@ export class DshSession {
     const toolCall = isRec(params) && isRec(params.toolCall) ? params.toolCall : undefined;
     this.events.output(renderPermission(params, options, this.renderer.toolDetail(toolCall ? str(toolCall.toolCallId) : undefined)));
     this.events.status('needs_input');
+    if (this.events.permission) void this.events.permission(id, params, options).then((optionId) => this.permission?.id === id && this.answerPermission(optionId, !optionId));
   }
 
   private onUpdate(params: unknown): void {

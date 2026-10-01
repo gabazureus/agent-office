@@ -28,6 +28,7 @@ import type { Arcade, HighScores } from '../cabinet.js';
 import type { FloorInfo, Me, ServerMsg, ServiceInfo, ServicesState, SignInKind } from '../../shared/protocol.js';
 import type { Client } from './client.js';
 import type { Spot } from './input.js';
+import type { InteractionCenter } from '../interactions.js';
 
 export type ToastLevel = Extract<ServerMsg, { t: 'toast' }>['level'];
 
@@ -52,6 +53,8 @@ export interface Core {
   /** The building: a floor per project, each with its own workers, boards and queue. */
   building: Building;
   floors: Map<string, Floor>;
+  /** Structured provider callbacks awaiting a person, across every floor. */
+  interactions: InteractionCenter;
 }
 
 /** Made once the hook server listens, before any floor opens (office/services.ts). */

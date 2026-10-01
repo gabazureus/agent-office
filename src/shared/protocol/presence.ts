@@ -8,6 +8,7 @@ import type { Me } from './accounts.js';
 import type { FloorInfo, FloorView, ProjectsDirState } from './floors.js';
 import type { LeaveOnMergeState, MachineState, MapState, NotifyState, PromptsState, SkyState, ThemeState, UpgradeState } from './settings.js';
 import type { PlanLimits, UsageState } from './usage.js';
+import type { PendingInteraction } from './interactions.js';
 
 /** The issue on a card someone carries around the floor (see PeerInfo.carrying). */
 export interface CarriedIssue {
@@ -135,6 +136,8 @@ export type PresenceServerMsg =
       /** The office's prompts and the worker everyone starts on. */
       prompts: PromptsState;
       leaveOnMerge: LeaveOnMergeState;
+      /** Blocking provider callbacks still awaiting a person, across every floor. */
+      interactions: PendingInteraction[];
     } & FloorView)
   | { t: 'peer.join'; peer: PeerInfo }
   | { t: 'peer.update'; peer: PeerInfo }

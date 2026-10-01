@@ -24,6 +24,8 @@ export interface CodexHookEvent {
   turnId?: string;
   /** Only the server-side metric reader uses this path; never sent to browsers. */
   transcriptPath?: string;
+  /** Kept server-side for a structured permission card; never forwarded to browsers directly. */
+  toolInput?: Record<string, unknown>;
 }
 
 const MAX_ID = 160;
@@ -72,6 +74,7 @@ export function normalizeCodexHook(event: string, payload: unknown): CodexHookEv
     if (tool) result.tool = tool;
     const toolUseId = bounded(payload.tool_use_id, MAX_ID);
     if (toolUseId) result.toolUseId = toolUseId;
+    if (isRecord(payload.tool_input) && JSON.stringify(payload.tool_input).length <= MAX_TEXT) result.toolInput = payload.tool_input;
   }
   return result;
 }
@@ -93,7 +96,8 @@ export function codexHookArgs(hookPath: string): string[] {
   const args: string[] = [];
   for (const event of CODEX_HOOK_EVENTS) {
     const command = [process.execPath, hookPath, event].map(shellQuote).join(' ');
-    const config = `hooks.${event}=[{hooks=[{type="command",command=${JSON.stringify(command)},timeout=3}]}]`;
+    const timeout = event === 'PermissionRequest' || event === 'PreToolUse' ? 86400 : 3;
+    const config = `hooks.${event}=[{hooks=[{type="command",command=${JSON.stringify(command)},timeout=${timeout}}]}]`;
     args.push('-c', config);
   }
   return args;
@@ -116,7 +120,7 @@ const MAX_ID = 160;
 const MAX_TEXT = 20000;
 const allowed = (value, max) => typeof value === 'string' && value.trim() && value.trim().length <= max ? value.trim() : undefined;
 const hasText = (value) => typeof value === 'string' && value.trim().length > 0;
-const finish = (ok) => { if (ok) process.stdout.write('{}'); };
+const finish = (ok, body = '{}') => { if (ok) process.stdout.write(body || '{}'); };
 const event = process.argv[2];
 let size = 0;
 let overflow = false;
@@ -141,29 +145,38 @@ process.stdin.on('end', async () => {
   const prompt = event === 'UserPromptSubmit' ? allowed(input.prompt, MAX_TEXT) : undefined;
   const tool = event === 'PreToolUse' || event === 'PostToolUse' || event === 'PermissionRequest' ? allowed(input.tool_name, MAX_ID) : undefined;
   const toolUseId = event === 'PreToolUse' || event === 'PostToolUse' || event === 'PermissionRequest' ? allowed(input.tool_use_id, MAX_ID) : undefined;
+  const toolInput = event === 'PreToolUse' || event === 'PermissionRequest' ? input.tool_input : undefined;
   const transcript = allowed(input.transcript_path, 4096);
   const turn = allowed(input.turn_id, MAX_ID);
   if (source) body.source = source;
   if (prompt) body.prompt = prompt;
   if (tool) body.tool_name = tool;
   if (toolUseId) body.tool_use_id = toolUseId;
+  if (toolInput && typeof toolInput === 'object' && !Array.isArray(toolInput) && JSON.stringify(toolInput).length <= MAX_TEXT) body.tool_input = toolInput;
   if (turn) body.turn_id = turn;
   if (transcript) body.transcript_path = transcript;
   const base = process.env.AGENT_OFFICE_HOOK_URL;
   const token = process.env.AGENT_OFFICE_HOOK_TOKEN;
   const worker = process.env.AGENT_OFFICE_WORKER_ID;
   if (!base || !token || !worker) return finish(false);
-  try {
-    const url = new URL('/hooks/codex', base);
-    url.searchParams.set('worker', worker);
-    url.searchParams.set('event', event);
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(2000),
-    });
-    finish(response.ok);
-  } catch { finish(false); }
+  const url = new URL('/hooks/codex', base);
+  url.searchParams.set('worker', worker);
+  url.searchParams.set('event', event);
+  const blocking = event === 'PermissionRequest' || (event === 'PreToolUse' && /(?:^|[._])request_user_input$/.test(tool || ''));
+  for (;;) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        ...(blocking ? {} : { signal: AbortSignal.timeout(2000) }),
+      });
+      if (response.ok) return finish(true, await response.text());
+      if (response.status !== 503) return finish(false);
+    } catch (err) {
+      if (!blocking) return finish(false);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
 });
 `;

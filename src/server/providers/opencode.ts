@@ -7,6 +7,7 @@ import { reportedUsage } from '../reported-usage.js';
 import type { WorkerHandle } from '../workers/types.js';
 import { truncate } from '../workers/util.js';
 import type { ProviderAdapter } from './types.js';
+import { interactionResource, redactInteractionText, type ProviderInteractionDraft } from '../interactions.js';
 
 /** What a worker that reports statuses (OpenCode's plugin, Pi's extension) keeps of them. */
 export interface StatusState {
@@ -50,6 +51,71 @@ function isOpenCodeHookEvent(value: unknown): value is OpenCodeStatusEvent {
     && (v.prompt === undefined || typeof v.prompt === 'string')
     && (v.tool === undefined || typeof v.tool === 'string')
     && (v.detail === undefined || typeof v.detail === 'string');
+}
+
+const rec = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+
+/** OpenCode's plugin SDK can answer both native permission and question requests by request id. */
+export function openCodeInteraction(payload: unknown): ProviderInteractionDraft | undefined {
+  if (!rec(payload) || typeof payload.sessionId !== 'string' || typeof payload.requestId !== 'string') return undefined;
+  const correlationId = `${payload.sessionId}:${payload.type}:${payload.requestId}`;
+  if (payload.type === 'permission') {
+    const permission = redactInteractionText(payload.permission, 160) ?? 'tool';
+    const patterns = Array.isArray(payload.patterns) ? payload.patterns.map((value) => redactInteractionText(value, 500)).filter((value): value is string => !!value).slice(0, 20) : [];
+    const metadata = rec(payload.metadata) ? payload.metadata : {};
+    const resource = interactionResource(permission, { description: patterns.join('\n') || JSON.stringify(metadata) });
+    return {
+      correlationId,
+      kind: 'permission',
+      title: `${permission} needs permission`,
+      prompt: `Allow OpenCode to use ${permission}?`,
+      description: 'OpenCode offers these three native outcomes. “Always” saves the provider-proposed patterns for this project.',
+      resource,
+      impact: patterns.length ? `Provider-proposed project patterns:\n${patterns.join('\n')}` : resource,
+      options: [
+        { id: 'once', label: 'Allow once', description: 'Approve only this pending request.', intent: 'approve', risk: 'caution' },
+        { id: 'always', label: 'Always allow proposed scope', description: 'Save OpenCode’s proposed patterns for this project. Configured deny rules still win.', intent: 'approve', risk: 'danger' },
+        { id: 'reject', label: 'Reject', description: 'Reject this and other pending permissions in the same session.', intent: 'deny' },
+      ],
+      respond: (response) => ({ reply: response.optionId }),
+    };
+  }
+  if (payload.type !== 'question' || !Array.isArray(payload.questions)) return undefined;
+  const questions = payload.questions.slice(0, 8).filter(rec);
+  const fields = questions.flatMap((question, index) => {
+    const prompt = redactInteractionText(question.question, 2_000);
+    if (!prompt) return [];
+    const options = Array.isArray(question.options) ? question.options.slice(0, 20).flatMap((option) => {
+      if (!rec(option)) return [];
+      const label = redactInteractionText(option.label, 200);
+      return label ? [{ label, description: redactInteractionText(option.description, 500) }] : [];
+    }) : [];
+    return [{
+      id: `q${index}`,
+      label: redactInteractionText(question.header, 120) ?? `Question ${index + 1}`,
+      prompt,
+      ...(options.length ? { options } : {}),
+      ...(question.multiple === true || question.multiSelect === true ? { multiple: true } : {}),
+      text: !options.length || question.custom === true,
+    }];
+  });
+  if (!fields.length) return undefined;
+  return {
+    correlationId,
+    kind: 'question',
+    title: fields.length === 1 ? fields[0].label : `${fields.length} questions`,
+    prompt: fields.map((field) => field.prompt).join('\n'),
+    description: 'This is a native OpenCode question request.',
+    options: [
+      { id: 'submit', label: 'Send answer', intent: 'approve', risk: 'safe' },
+      { id: 'reject', label: 'Reject', intent: 'deny' },
+    ],
+    fields,
+    respond(response) {
+      if (response.optionId === 'reject') return { reject: true };
+      return { answers: fields.map((field) => response.answers?.[field.id] ?? []) };
+    },
+  };
 }
 
 /** OpenCode plugin callback. The plugin has already filtered child sessions before this bridge. */
@@ -128,6 +194,6 @@ export const opencode: ProviderAdapter<StatusState, OpenCodeSetup> = {
       },
     };
   },
-  hook: { strictJson: true, handle: openCodeHook },
+  hook: { strictJson: true, handle: openCodeHook, interaction: (_h, _event, payload) => openCodeInteraction(payload) },
   usage: { persisted: true },
 };

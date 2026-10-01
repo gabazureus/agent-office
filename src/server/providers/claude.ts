@@ -1,5 +1,6 @@
 // Claude Code: hooks from a settings file the office writes (its own hook route, /hooks/claude),
 // usage read off the session transcript and booked in the budget, and tasks the office names.
+import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { FAILS_TO_DESPAIR, outputFailed, toolAction } from '../../shared/actions.js';
@@ -10,12 +11,8 @@ import { shq } from '../workers/process.js';
 import type { WorkerHandle } from '../workers/types.js';
 import { truncate } from '../workers/util.js';
 import type { ProviderAdapter } from './types.js';
-
-/**
- * A hook finding the office restarting (its workers keep running through that) retries, once a
- * second, this many times in all: long enough for a dev-server reload.
- */
-const HOOK_TRIES = 6;
+import { interactionResource, redactInteractionText, type ProviderInteractionDraft } from '../interactions.js';
+import type { PendingInteractionResponse } from '../../shared/protocol.js';
 
 /** First-run screens Claude shows before it can take a prompt. */
 const SETUP_PROMPT = /trust this folder|Do you trust the files|Select login method|Choose the text style|Press Enter to continue|Bypass Permissions mode/i;
@@ -26,6 +23,137 @@ interface ClaudeSetup {
   settings: string;
   /** Its --mcp-config: the office's MCP server. */
   mcp?: string;
+}
+
+const rec = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+const text = (value: unknown): string | undefined => (typeof value === 'string' && value.trim() ? value.trim() : undefined);
+const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 24);
+
+/** Normalize only Claude's documented blocking hook contracts; unknown events keep the terminal fallback. */
+export function claudeInteraction(event: string, payload: unknown): ProviderInteractionDraft | undefined {
+  if (!rec(payload)) return undefined;
+  const session = text(payload.session_id);
+  const tool = text(payload.tool_name);
+  const input = rec(payload.tool_input) ? payload.tool_input : {};
+  const toolUseId = text(payload.tool_use_id);
+  if (!session || !tool) return undefined;
+  const correlation = `${session}:${event}:${toolUseId ?? digest([tool, input])}`;
+
+  if (event === 'PreToolUse' && tool === 'AskUserQuestion' && Array.isArray(input.questions)) {
+    const questions = input.questions.slice(0, 8).filter(rec);
+    const fields = questions.flatMap((q, index) => {
+      const prompt = redactInteractionText(q.question, 2_000);
+      if (!prompt) return [];
+      const choices = Array.isArray(q.options)
+        ? q.options.slice(0, 20).filter(rec).flatMap((o) => {
+            const label = redactInteractionText(o.label, 200);
+            return label ? [{ label, description: redactInteractionText(o.description, 500) }] : [];
+          })
+        : [];
+      return [{
+        id: `q${index}`,
+        label: redactInteractionText(q.header, 120) ?? `Question ${index + 1}`,
+        prompt,
+        options: choices.length ? choices : undefined,
+        multiple: q.multiSelect === true,
+        text: !choices.length || q.isOther === true,
+        secret: q.isSecret === true,
+      }];
+    });
+    if (!fields.length) return undefined;
+    return {
+      correlationId: correlation,
+      kind: 'question',
+      title: fields.length === 1 ? fields[0].label : `${fields.length} questions`,
+      prompt: fields.map((f) => f.prompt).join('\n'),
+      description: 'Claude is waiting for structured user input.',
+      options: [
+        { id: 'submit', label: 'Send answer', intent: 'approve', risk: 'safe' },
+        { id: 'cancel', label: 'Cancel', intent: 'cancel' },
+      ],
+      fields,
+      respond(response) {
+        if (response.optionId === 'cancel') return claudePreToolDecision('deny', undefined, 'Cancelled in Agent Office');
+        const answers: Record<string, string> = {};
+        fields.forEach((field) => {
+          const index = Number(field.id.slice(1));
+          const original = questions[index];
+          const question = text(original.question);
+          const values = response.answers?.[field.id] ?? [];
+          if (question) answers[question] = field.multiple ? values.join(', ') : (values[0] ?? '');
+        });
+        return claudePreToolDecision('allow', { ...input, answers });
+      },
+    };
+  }
+
+  if (event === 'PreToolUse' && tool === 'ExitPlanMode') {
+    return {
+      correlationId: correlation,
+      kind: 'confirmation',
+      title: 'Continue from the plan?',
+      prompt: redactInteractionText(input.plan, 4_000) ?? 'Claude wants to leave plan mode and continue.',
+      description: 'Confirming lets the current turn proceed. Cancelling returns the refusal to Claude.',
+      options: [
+        { id: 'continue', label: 'Continue', intent: 'approve', risk: 'caution' },
+        { id: 'cancel', label: 'Cancel', intent: 'cancel' },
+      ],
+      respond: (response) => claudePreToolDecision(response.optionId === 'continue' ? 'allow' : 'deny', response.optionId === 'continue' ? input : undefined, response.optionId === 'continue' ? undefined : 'Cancelled in Agent Office'),
+    };
+  }
+
+  if (event !== 'PermissionRequest') return undefined;
+  const suggestions = Array.isArray(payload.permission_suggestions) ? payload.permission_suggestions.filter(rec).slice(0, 8) : [];
+  const options = [
+    { id: 'allow-once', label: 'Allow once', description: 'Allow only this request.', intent: 'approve' as const, risk: 'caution' as const },
+    ...suggestions.map((suggestion, index) => ({
+      id: `suggestion-${index}`,
+      label: permissionSuggestionLabel(suggestion),
+      description: 'Apply the exact scope suggested by Claude Code.',
+      intent: 'approve' as const,
+      risk: 'danger' as const,
+    })),
+    { id: 'deny', label: 'Deny', description: 'Refuse this request and let Claude continue.', intent: 'deny' as const },
+  ];
+  const resource = interactionResource(tool, input);
+  return {
+    correlationId: correlation,
+    kind: 'permission',
+    title: `${tool} needs permission`,
+    prompt: text(input.description) ?? `Allow Claude to use ${tool}?`,
+    description: 'This is a native Claude Code permission callback.',
+    resource,
+    impact: resource,
+    risk: destructiveRisk(resource),
+    options,
+    respond(response: PendingInteractionResponse) {
+      if (response.optionId === 'deny') return claudePermissionDecision('deny', undefined, 'Denied in Agent Office');
+      const suggestion = /^suggestion-(\d+)$/.exec(response.optionId ?? '');
+      return claudePermissionDecision('allow', suggestion ? [suggestions[Number(suggestion[1])]] : undefined);
+    },
+  };
+}
+
+function claudePreToolDecision(decision: 'allow' | 'deny', updatedInput?: Record<string, unknown>, reason?: string) {
+  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: decision, ...(reason ? { permissionDecisionReason: reason } : {}), ...(updatedInput ? { updatedInput } : {}) } };
+}
+
+function claudePermissionDecision(behavior: 'allow' | 'deny', updatedPermissions?: Record<string, unknown>[], message?: string) {
+  return { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior, ...(updatedPermissions?.length ? { updatedPermissions } : {}), ...(message ? { message } : {}) } } };
+}
+
+function permissionSuggestionLabel(suggestion: Record<string, unknown>): string {
+  if (suggestion.type === 'setMode' && typeof suggestion.mode === 'string') return `Allow and set ${suggestion.mode} mode`;
+  if (suggestion.type === 'addDirectories') return 'Allow and add suggested directories';
+  if (suggestion.type === 'addRules') return 'Allow and add suggested rule';
+  return 'Allow with suggested scope';
+}
+
+function destructiveRisk(resource: string | undefined): string | undefined {
+  if (!resource) return undefined;
+  return /(?:rm\s+-rf|git\s+(?:reset\s+--hard|clean\s+-f)|drop\s+(?:table|database)|destroy|delete)/i.test(resource)
+    ? 'Potentially destructive operation. Review the exact command or resource before allowing.'
+    : undefined;
 }
 
 /** Claude Code's --settings for every worker: each hook event posted to the office, with curl or else the office's own node. */
@@ -41,7 +169,8 @@ function writeHookSettings(dataDir: string): string {
     ['PostToolUse', undefined],
     ['PostToolUseFailure', undefined],
   ];
-  // Minimal VPS images sometimes lack curl; the office's own node binary is always there.
+  // The office's own node is always present. Blocking hooks keep this helper alive until the UI
+  // answers; if the office restarts, it reconnects with the same provider correlation payload.
   const nodeHook = path.join(dataDir, 'hook.cjs');
   writeFileSync(
     nodeHook,
@@ -50,32 +179,43 @@ const [event] = process.argv.slice(2);
 let body = '';
 process.stdin.on('data', (c) => (body += c));
 process.stdin.on('end', () => {
+  if (body.length > 262144) return process.stdout.write('{}');
+  let payload = {};
+  try { payload = JSON.parse(body); } catch {}
+  const blocking = event === 'PermissionRequest' || (event === 'PreToolUse' && (payload.tool_name === 'AskUserQuestion' || payload.tool_name === 'ExitPlanMode'));
+  let tries = blocking ? Infinity : 6;
   const url = new URL(process.env.AGENT_OFFICE_HOOK_URL + '/hooks/claude');
   url.searchParams.set('worker', process.env.AGENT_OFFICE_WORKER_ID);
   url.searchParams.set('event', event);
-  const send = (tries) => {
-    const req = http.request(url, { method: 'POST', timeout: 3000, headers: { authorization: 'Bearer ' + process.env.AGENT_OFFICE_HOOK_TOKEN, 'content-type': 'application/json' } }, (res) => res.resume());
+  const send = () => {
+    const req = http.request(url, { method: 'POST', ...(blocking ? {} : { timeout: 3000 }), headers: { authorization: 'Bearer ' + process.env.AGENT_OFFICE_HOOK_TOKEN, 'content-type': 'application/json' } }, (res) => {
+      let out = '';
+      res.on('data', (c) => (out += c));
+      res.on('end', () => {
+        if (res.statusCode === 200) return process.stdout.write(out || '{}');
+        if (res.statusCode === 503 && --tries > 0) return setTimeout(send, 1000);
+        process.stdout.write('{}');
+      });
+    });
     req.on('error', (err) => {
-      if (err.code === 'ECONNREFUSED' && tries > 1) setTimeout(() => send(tries - 1), 1000);
+      if ((err.code === 'ECONNREFUSED' || err.code === 'ECONNRESET' || err.code === 'EPIPE') && --tries > 0) setTimeout(send, 1000);
+      else process.stdout.write('{}');
     });
     req.on('timeout', () => req.destroy());
     req.end(body);
   };
-  send(${HOOK_TRIES});
+  send();
 });
 `,
     { mode: 0o600 },
   );
   const hooks: Record<string, unknown[]> = {};
   for (const [event, matcher] of events) {
-    const curl =
-      `curl -sS -m 3 --retry ${HOOK_TRIES - 1} --retry-delay 1 --retry-connrefused -X POST -H "Authorization: Bearer $AGENT_OFFICE_HOOK_TOKEN" -H "Content-Type: application/json" ` +
-      `--data-binary @- "$AGENT_OFFICE_HOOK_URL/hooks/claude?worker=$AGENT_OFFICE_WORKER_ID&event=${event}"`;
     const command =
       `if [ -z "$AGENT_OFFICE_WORKER_ID" ] || [ -z "$AGENT_OFFICE_HOOK_URL" ]; then exit 0; fi; ` +
-      `if command -v curl >/dev/null 2>&1; then ${curl} >/dev/null 2>&1; ` +
-      `else ${shq(process.execPath)} ${shq(nodeHook)} ${event} >/dev/null 2>&1; fi; true`;
-    hooks[event] = [{ ...(matcher ? { matcher } : {}), hooks: [{ type: 'command', command }] }];
+      `${shq(process.execPath)} ${shq(nodeHook)} ${event}`;
+    const timeout = event === 'PermissionRequest' || event === 'PreToolUse' ? 86400 : 3;
+    hooks[event] = [{ ...(matcher ? { matcher } : {}), hooks: [{ type: 'command', command, timeout }] }];
   }
   // Looking at the office's workers doesn't need anyone's say-so; hiring and sending home still asks.
   const permissions = { allow: MCP_READ_ONLY };
@@ -213,7 +353,7 @@ export const claude: ProviderAdapter<undefined, ClaudeSetup> = {
   titleNoise: /^claude( code)?$/i,
   // Resuming a conversation Claude no longer has ("No conversation found") exits before Claude ever starts.
   freshIfResumeFails: true,
-  hook: { strictJson: false, handle: claudeHook },
+  hook: { strictJson: false, handle: claudeHook, interaction: (_h, event, payload) => claudeInteraction(event, payload) },
   // OSC 9;4 progress (Claude Code emits it): 0 = idle, anything else = busy. Catches Esc-cancel,
   // which fires no Stop hook.
   screen: { progress: true, blocked: claudeBlocked },

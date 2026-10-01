@@ -4,6 +4,7 @@
 import type { AgentProvider } from '../../shared/providers.js';
 import type { StationKind } from '../../shared/layout.js';
 import type { WorkerHandle } from '../workers/types.js';
+import type { ProviderInteractionDraft } from '../interactions.js';
 
 /** What a provider is set up with on one floor (see ProviderAdapter.prepare). */
 export interface ProviderFloor {
@@ -49,6 +50,8 @@ export interface ProviderHook<S> {
   strictJson: boolean;
   /** One event from one of its workers (running, with the right token). Says whether it was taken. */
   handle(h: WorkerHandle<S>, event: string, payload: unknown): boolean;
+  /** A blocking, structured callback the office can surface and answer without PTY input. */
+  interaction?(h: WorkerHandle<S>, event: string, payload: unknown): ProviderInteractionDraft | undefined;
 }
 
 export interface ProviderUsage<S> {
