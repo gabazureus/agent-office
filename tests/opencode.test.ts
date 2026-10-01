@@ -41,7 +41,12 @@ test('writes a loadable plugin module that forwards root events and excludes sub
     process.env.AGENT_OFFICE_HOOK_TOKEN = 'token';
     process.env.AGENT_OFFICE_WORKER_ID = 'worker';
     process.env.AGENT_OFFICE_SESSION_ID = 'ses_existing';
-    globalThis.fetch = (async (_url, init) => {
+    globalThis.fetch = (async (url, init) => {
+      const target = new URL(String(url));
+      if (target.hostname === 'opencode.test') {
+        replies.push({ path: target.pathname, directory: target.searchParams.get('directory'), body: init?.body ? JSON.parse(String(init.body)) : undefined });
+        return new Response('true', { status: 200, headers: { 'content-type': 'application/json' } });
+      }
       const body = JSON.parse(String(init?.body));
       sent.push(body);
       const response = body.type === 'permission' ? { reply: 'once' } : body.type === 'question' ? { answers: [['one.ts']] } : {};
@@ -88,17 +93,14 @@ test('writes a loadable plugin module that forwards root events and excludes sub
 
     // Selecting an existing root conversation emits no session.created event. Verify it through
     // the SDK before adopting it, and serialize that lookup with subsequent busy/idle events.
-    const selected = await mod.default({ client: {
-      session: { get: async ({ path }: any) => {
+    const selected = await mod.default({
+      serverUrl: new URL('http://opencode.test:4096'),
+      directory: '/repo with spaces',
+      client: { session: { get: async ({ path }: any) => {
         await new Promise((resolve) => setTimeout(resolve, 10));
         return { data: { id: path.id, ...(path.id === 'child' ? { parentID: 'parent' } : {}) } };
-      } },
-      permission: { reply: async (value: unknown) => void replies.push(value) },
-      question: {
-        reply: async (value: unknown) => void replies.push(value),
-        reject: async (value: unknown) => void replies.push(value),
-      },
-    } });
+      } } },
+    });
     sent.length = 0;
     await Promise.all([
       selected['chat.message']({ sessionID: 'saved' }, { parts: [{ type: 'text', text: 'continue here' }] }),
@@ -121,8 +123,8 @@ test('writes a loadable plugin module that forwards root events and excludes sub
     await event('permission.asked', { id: 'permission-1', permission: 'edit' });
     await event('question.asked', { id: 'question-1', questions: [{ question: 'Which file?' }] });
     assert.deepEqual(replies, [
-      { requestID: 'permission-1', reply: 'once' },
-      { requestID: 'question-1', answers: [['one.ts']] },
+      { path: '/permission/permission-1/reply', directory: '/repo with spaces', body: { reply: 'once' } },
+      { path: '/question/question-1/reply', directory: '/repo with spaces', body: { answers: [['one.ts']] } },
     ]);
     assert.ok(sent.some((value: any) => value.type === 'interaction-result' && value.requestId === 'permission-1' && value.ok === true));
     assert.ok(sent.some((value: any) => value.type === 'interaction-result' && value.requestId === 'question-1' && value.ok === true));

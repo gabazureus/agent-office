@@ -120,7 +120,7 @@ export function openCodeInteraction(payload: unknown): ProviderInteractionDraft 
   };
 }
 
-/** OpenCode confirms the SDK call separately from the original blocking hook response. */
+/** OpenCode confirms the native reply endpoint separately from the original blocking hook response. */
 export function openCodeInteractionResult(payload: unknown): ProviderInteractionResult | undefined {
   if (!rec(payload) || payload.type !== 'interaction-result' || typeof payload.sessionId !== 'string' || typeof payload.requestId !== 'string') return undefined;
   const requestType = payload.requestType === 'permission' || payload.requestType === 'question' ? payload.requestType : undefined;

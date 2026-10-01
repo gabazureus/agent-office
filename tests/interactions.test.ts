@@ -80,7 +80,7 @@ test('restores active requests and rejects options the provider did not advertis
   }
 });
 
-test('keeps SDK-mediated responses sending until provider acknowledgement and permits safe retry', async () => {
+test('keeps provider-mediated responses sending until provider acknowledgement and permits safe retry', async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'office-interactions-'));
   const updates: PendingInteraction[] = [];
   try {

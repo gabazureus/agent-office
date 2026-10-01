@@ -67,7 +67,7 @@ export function openCodePluginSpecifier(file: string): string {
 }
 
 /** No imports: OpenCode loads this module from the office data directory in packaged installs. */
-export const OPENCODE_PLUGIN_SOURCE = String.raw`export default async function AgentOfficeOpenCodePlugin({ client } = {}) {
+export const OPENCODE_PLUGIN_SOURCE = String.raw`export default async function AgentOfficeOpenCodePlugin({ client, serverUrl, directory } = {}) {
   const url = process.env.AGENT_OFFICE_HOOK_URL;
   const token = process.env.AGENT_OFFICE_HOOK_TOKEN;
   const worker = process.env.AGENT_OFFICE_WORKER_ID;
@@ -108,18 +108,30 @@ export const OPENCODE_PLUGIN_SOURCE = String.raw`export default async function A
   function detail(value) {
     return typeof value === "string" && value.trim() ? value.trim().slice(0, 500) : undefined;
   }
+  async function providerReply(path, body) {
+    const target = new URL(path, serverUrl);
+    if (directory) target.searchParams.set("directory", directory);
+    const headers = {};
+    if (body !== undefined) headers["content-type"] = "application/json";
+    const password = process.env.OPENCODE_SERVER_PASSWORD;
+    if (password) headers.authorization = "Basic " + btoa((process.env.OPENCODE_SERVER_USERNAME || "opencode") + ":" + password);
+    const response = await fetch(target, { method: "POST", headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    if (!response.ok) throw new Error("OpenCode response failed (" + response.status + ")");
+    const accepted = await response.json().catch(() => true);
+    if (accepted === false) throw new Error("OpenCode rejected the response");
+  }
   async function applyInteraction(payload, response) {
-    if (payload.type === "permission" && client.permission && typeof client.permission.reply === "function" && ["once", "always", "reject"].includes(response.reply)) {
-      await client.permission.reply({ requestID: payload.requestId, reply: response.reply });
+    if (payload.type === "permission" && ["once", "always", "reject"].includes(response.reply)) {
+      await providerReply("/permission/" + encodeURIComponent(payload.requestId) + "/reply", { reply: response.reply });
       return { status: response.reply === "reject" ? "denied" : "resolved", decision: response.reply };
     }
-    if (payload.type === "question" && client.question) {
-      if (response.reject && typeof client.question.reject === "function") {
-        await client.question.reject({ requestID: payload.requestId });
+    if (payload.type === "question") {
+      if (response.reject) {
+        await providerReply("/question/" + encodeURIComponent(payload.requestId) + "/reject");
         return { status: "denied", decision: "reject" };
       }
-      if (Array.isArray(response.answers) && typeof client.question.reply === "function") {
-        await client.question.reply({ requestID: payload.requestId, answers: response.answers });
+      if (Array.isArray(response.answers)) {
+        await providerReply("/question/" + encodeURIComponent(payload.requestId) + "/reply", { answers: response.answers });
         return { status: "resolved", decision: "submit" };
       }
     }
