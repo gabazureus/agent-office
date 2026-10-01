@@ -14,6 +14,7 @@ import { openAccounts } from '../../ui/accounts';
 import { openBoard } from '../../ui/boards';
 import { openCharacter } from '../../ui/character';
 import { $ } from '../../ui/dom';
+import { toggleEnvironmentSummary } from '../../ui/environment-summary';
 import { toggleFloorMenu } from '../../ui/floormenu';
 import { openHelp } from '../../ui/hud';
 import { mountHud } from '../../ui/menu';
@@ -43,6 +44,7 @@ export function installHud(ctx: Ctx, core: CoreState, parts: HudParts) {
     if (!store.floor) return travel.showElevator();
     toggleFloorMenu($('project'), { go: travel.switchFloor, indoors: () => (!inOffice() && !core.upTop) || parts.place.indoors(), elevator: travel.showElevator, roof: inOffice() ? () => travel.ride(ROOF) : null });
   });
+  $('environment-summary').addEventListener('click', () => toggleEnvironmentSummary($('environment-summary'), () => net.send({ t: 'gh.refresh' })));
 
   // ---- The HUD: a few buttons on the top bar, everything else in the ☰ menu ----------------------------
   const waitingNow = () => waitingInOrder(store.workers.values());
