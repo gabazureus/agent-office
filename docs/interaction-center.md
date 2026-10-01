@@ -14,6 +14,8 @@ parses terminal pixels or types an answer into a PTY.
   payloads are not sent to browsers or saved in the queue.
 - Only option and field ids advertised by the provider are accepted. The first valid response wins;
   stale or duplicate clients cannot apply a second decision.
+- For SDK-mediated replies, the item remains `sending` until the provider acknowledges the SDK
+  call. A rejected call becomes a retryable error without claiming that the worker was unblocked.
 - Worker exit/removal, provider cancellation, and deadlines close the request. Resolved items stay
   visible briefly so every open client can show the outcome.
 - UI text is rendered as text nodes. Control characters and common credential forms are removed,

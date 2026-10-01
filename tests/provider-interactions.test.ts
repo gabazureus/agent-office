@@ -7,7 +7,7 @@ import type { PendingInteraction, WorkerInfo } from '../src/shared/protocol.js';
 import { InteractionCenter } from '../src/server/interactions.js';
 import { claudeInteraction } from '../src/server/providers/claude.js';
 import { codexInteraction } from '../src/server/providers/codex.js';
-import { openCodeInteraction } from '../src/server/providers/opencode.js';
+import { openCodeInteraction, openCodeInteractionResult } from '../src/server/providers/opencode.js';
 import { interactionHandlers } from '../src/server/ws/handlers/interactions.js';
 
 test('Claude questions and scoped permissions encode exact native hook replies', () => {
@@ -37,8 +37,10 @@ test('OpenCode preserves its real once/always/reject choices and question reply 
   assert.deepEqual(permission.options.map((o) => o.id), ['once', 'always', 'reject']);
   assert.deepEqual(permission.respond({ optionId: 'always' }), { reply: 'always' });
   const question = openCodeInteraction({ type: 'question', sessionId: 's', requestId: 'q', questions: [{ header: 'Mode', question: 'Pick one', options: [{ label: 'Fast' }, { label: 'Safe' }] }] })!;
+  assert.equal(question.awaitProviderAck, true);
   assert.deepEqual(question.respond({ optionId: 'submit', answers: { q0: ['Safe'] } }), { answers: [['Safe']] });
   assert.deepEqual(question.respond({ optionId: 'reject' }), { reject: true });
+  assert.deepEqual(openCodeInteractionResult({ type: 'interaction-result', sessionId: 's', requestId: 'q', requestType: 'question', ok: true, status: 'resolved', decision: 'submit' }), { correlationId: 's:question:q', ok: true, status: 'resolved', decision: 'submit' });
 });
 
 test('a structured provider request is resolved by the UI protocol message and unblocks its adapter', async () => {

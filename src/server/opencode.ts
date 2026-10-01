@@ -108,6 +108,23 @@ export const OPENCODE_PLUGIN_SOURCE = String.raw`export default async function A
   function detail(value) {
     return typeof value === "string" && value.trim() ? value.trim().slice(0, 500) : undefined;
   }
+  async function applyInteraction(payload, response) {
+    if (payload.type === "permission" && client.permission && typeof client.permission.reply === "function" && ["once", "always", "reject"].includes(response.reply)) {
+      await client.permission.reply({ requestID: payload.requestId, reply: response.reply });
+      return { status: response.reply === "reject" ? "denied" : "resolved", decision: response.reply };
+    }
+    if (payload.type === "question" && client.question) {
+      if (response.reject && typeof client.question.reject === "function") {
+        await client.question.reject({ requestID: payload.requestId });
+        return { status: "denied", decision: "reject" };
+      }
+      if (Array.isArray(response.answers) && typeof client.question.reply === "function") {
+        await client.question.reply({ requestID: payload.requestId, answers: response.answers });
+        return { status: "resolved", decision: "submit" };
+      }
+    }
+    throw new Error("OpenCode did not accept the advertised interaction response");
+  }
   function count(value) {
     return Number.isSafeInteger(value) && value >= 0 ? value : 0;
   }
@@ -298,13 +315,17 @@ export const OPENCODE_PLUGIN_SOURCE = String.raw`export default async function A
     event: ({ event }) => enqueue(async () => {
       const payload = compact(event);
       const interactive = payload && (payload.type === "permission" || payload.type === "question") && payload.requestId;
-      const response = await send(payload, !!interactive);
-      if (!interactive || !response || !client) return;
-      if (payload.type === "permission" && client.permission && typeof client.permission.reply === "function" && ["once", "always", "reject"].includes(response.reply)) {
-        await client.permission.reply({ path: { requestID: payload.requestId }, body: { reply: response.reply } });
-      } else if (payload.type === "question" && client.question) {
-        if (response.reject && typeof client.question.reject === "function") await client.question.reject({ path: { requestID: payload.requestId } });
-        else if (Array.isArray(response.answers) && typeof client.question.reply === "function") await client.question.reply({ path: { requestID: payload.requestId }, body: { answers: response.answers } });
+      let response = await send(payload, !!interactive);
+      if (!interactive || !client) return;
+      while (response) {
+        try {
+          const result = await applyInteraction(payload, response);
+          await send({ type: "interaction-result", sessionId: payload.sessionId, requestId: payload.requestId, requestType: payload.type, ok: true, ...result }, true);
+          return;
+        } catch (error) {
+          await send({ type: "interaction-result", sessionId: payload.sessionId, requestId: payload.requestId, requestType: payload.type, ok: false, error: detail(error?.message) || "OpenCode rejected the response" }, true);
+          response = await send(payload, true);
+        }
       }
     }),
     "chat.message": (input, output) => enqueue(async () => {

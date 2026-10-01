@@ -33,11 +33,21 @@ export interface InteractionRequest {
   options: PendingInteractionOption[];
   fields?: PendingInteractionField[];
   timeoutMs?: number;
+  /** The adapter will confirm that its provider accepted the reply before the UI resolves it. */
+  awaitProviderAck?: boolean;
 }
 
 /** Browser-safe request plus the provider-specific response encoder kept only in memory. */
 export interface ProviderInteractionDraft extends InteractionRequest {
   respond(response: PendingInteractionResponse): unknown;
+}
+
+export interface ProviderInteractionResult {
+  correlationId: string;
+  ok: boolean;
+  status?: 'resolved' | 'denied' | 'cancelled';
+  decision?: string;
+  error?: string;
 }
 
 export function redactInteractionText(value: unknown, max = MAX_TEXT): string | undefined {
@@ -60,6 +70,8 @@ interface RecordState {
   correlation: string;
   item: PendingInteraction;
   response?: PendingInteractionResponse;
+  by?: { id: string; name: string };
+  awaitProviderAck: boolean;
   waiters: Set<(response: PendingInteractionResponse) => void>;
   timer?: NodeJS.Timeout;
   removeTimer?: NodeJS.Timeout;
@@ -68,6 +80,7 @@ interface RecordState {
 interface SavedRecord {
   correlation: string;
   item: PendingInteraction;
+  awaitProviderAck?: boolean;
 }
 
 /** Bounded plain text for UI and disk. It deliberately catches common credentials, not arbitrary prose. */
@@ -176,17 +189,13 @@ export class InteractionCenter {
         ...(fields?.length ? { fields } : {}),
         ...(request.kind === 'unsupported' ? { unsupportedReason: safeInteractionText(request.description || request.prompt) } : {}),
       };
-      record = { correlation, item, waiters: new Set() };
+      record = { correlation, item, waiters: new Set(), awaitProviderAck: request.awaitProviderAck === true };
       this.byId.set(item.id, record);
       this.byCorrelation.set(correlation, record);
       this.arm(record);
       this.persist();
       this.emit({ ...item });
-    } else if (record.item.status === 'error') {
-      record.item = { ...record.item, status: 'pending', error: undefined, updatedAt: Date.now(), version: record.item.version + 1 };
-      this.persist();
-      this.emit({ ...record.item });
-    }
+    } else if (request.awaitProviderAck) record.awaitProviderAck = true;
     if (record.response) return Promise.resolve(record.response);
     if (terminal(record.item.status)) return Promise.reject(new Error(`interaction ${record.item.status}`));
     return new Promise((resolve) => record!.waiters.add(resolve));
@@ -210,21 +219,53 @@ export class InteractionCenter {
     record.item = { ...record.item, status: 'sending', error: undefined, updatedAt: Date.now(), version: version + 1 };
     this.emit({ ...record.item });
     record.response = checked;
+    record.by = by;
     const selected = record.item.options.find((o) => o.id === checked.optionId);
     const status: PendingInteractionStatus = selected?.intent === 'deny' ? 'denied' : selected?.intent === 'cancel' ? 'cancelled' : 'resolved';
     queueMicrotask(() => {
       const current = this.byId.get(id);
       if (current !== record || terminal(record.item.status)) return;
+      for (const waiter of record.waiters) waiter(checked);
+      record.waiters.clear();
+      if (record.awaitProviderAck) {
+        this.persist();
+        return;
+      }
       record.item = { ...record.item, status, updatedAt: Date.now(), version: record.item.version + 1 };
       this.audit(record.item, selected?.id ?? (checked.answers ? 'answered' : 'submitted'), by);
       clearTimeout(record.timer);
-      for (const waiter of record.waiters) waiter(checked);
-      record.waiters.clear();
       this.persist();
       this.emit({ ...record.item });
       this.removeLater(record, status as Extract<PendingInteractionStatus, 'resolved' | 'denied' | 'cancelled'>);
     });
     return undefined;
+  }
+
+  /** Provider-side acknowledgement for adapters whose SDK call happens after the hook response. */
+  settle(origin: InteractionOrigin, result: ProviderInteractionResult) {
+    const provider: AgentProvider = origin.worker.provider ?? 'custom';
+    const record = this.byCorrelation.get(`${origin.worker.id}:${provider}:${result.correlationId}`);
+    if (!record || terminal(record.item.status) || !record.awaitProviderAck) return;
+    if (!result.ok) {
+      record.response = undefined;
+      record.item = {
+        ...record.item,
+        status: 'error',
+        error: safeInteractionText(result.error, 500) || 'The provider could not accept that response',
+        updatedAt: Date.now(),
+        version: record.item.version + 1,
+      };
+      this.persist();
+      this.emit({ ...record.item });
+      return;
+    }
+    const status = result.status ?? 'resolved';
+    record.item = { ...record.item, status, error: undefined, updatedAt: Date.now(), version: record.item.version + 1 };
+    clearTimeout(record.timer);
+    this.audit(record.item, safeInteractionText(result.decision, 128) || 'submitted', record.by ?? { id: 'provider', name: 'Provider acknowledgement' });
+    this.persist();
+    this.emit({ ...record.item });
+    this.removeLater(record, status);
   }
 
   expireWorker(workerId: string, status: 'expired' | 'cancelled' = 'expired') {
@@ -311,7 +352,7 @@ export class InteractionCenter {
           updatedAt: Date.now(),
           version: value.item.version + 1,
         };
-        const record: RecordState = { correlation: value.correlation, item, waiters: new Set() };
+        const record: RecordState = { correlation: value.correlation, item, waiters: new Set(), awaitProviderAck: value.awaitProviderAck === true };
         this.byId.set(item.id, record);
         this.byCorrelation.set(record.correlation, record);
         this.arm(record);
@@ -323,7 +364,7 @@ export class InteractionCenter {
 
   private persist() {
     try {
-      const saved: SavedRecord[] = [...this.byId.values()].filter((r) => !terminal(r.item.status)).map((r) => ({ correlation: r.correlation, item: r.item }));
+      const saved: SavedRecord[] = [...this.byId.values()].filter((r) => !terminal(r.item.status)).map((r) => ({ correlation: r.correlation, item: r.item, ...(r.awaitProviderAck ? { awaitProviderAck: true } : {}) }));
       const tmp = `${this.file}.tmp`;
       writeFileSync(tmp, JSON.stringify(saved, null, 2), { mode: 0o600 });
       renameSync(tmp, this.file);

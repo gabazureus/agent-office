@@ -27,7 +27,7 @@ import { landedWork, landedWorkers, type Landed } from './leave-on-merge.js';
 import type { Ledger } from './usage.js';
 import type { Capacity } from './machine.js';
 import { officePrompt, type PromptSource } from './prompts.js';
-import type { ProviderInteractionDraft } from './interactions.js';
+import type { ProviderInteractionDraft, ProviderInteractionResult } from './interactions.js';
 
 type ToastLevel = 'info' | 'warn' | 'error';
 
@@ -73,6 +73,7 @@ export interface FloorContext {
   locksUp(): boolean;
   /** Wait for a browser to answer a provider's structured callback. */
   interact(floor: Floor, worker: WorkerInfo, request: ProviderInteractionDraft): Promise<unknown>;
+  settleInteraction(floor: Floor, worker: WorkerInfo, result: ProviderInteractionResult): void;
   cancelInteractions(workerId: string): void;
 }
 
@@ -203,6 +204,7 @@ export class Floor {
         screen: (workerId, frame) => ctx.emit(this, { t: 'screen', workerId, ...frame }, true),
         toast: (text, level) => ctx.toast(this, text, level),
         interact: (worker, request) => ctx.interact(this, worker, request),
+        settleInteraction: (worker, result) => ctx.settleInteraction(this, worker, result),
         cancelInteractions: (workerId) => ctx.cancelInteractions(workerId),
       },
       ctx.ledger,

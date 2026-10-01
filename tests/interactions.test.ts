@@ -79,3 +79,34 @@ test('restores active requests and rejects options the provider did not advertis
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('keeps SDK-mediated responses sending until provider acknowledgement and permits safe retry', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'office-interactions-'));
+  const updates: PendingInteraction[] = [];
+  try {
+    const center = new InteractionCenter(dir, (item) => updates.push(item), () => {});
+    const acknowledged = { ...request('sdk-ack'), awaitProviderAck: true };
+    const first = center.request({ worker: worker(), floorId: 'f1', floorName: 'Workspace' }, acknowledged);
+    let item = center.state()[0];
+    center.resolve(item.id, item.version, { optionId: 'allow' }, { id: 'browser', name: 'Grace' });
+    assert.deepEqual(await first, { optionId: 'allow' });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(center.state()[0].status, 'sending');
+
+    center.settle({ worker: worker(), floorId: 'f1', floorName: 'Workspace' }, { correlationId: 'sdk-ack', ok: false, error: 'SDK unavailable' });
+    item = center.state()[0];
+    assert.equal(item.status, 'error');
+    assert.match(item.error!, /SDK unavailable/);
+
+    const retry = center.request({ worker: worker(), floorId: 'f1', floorName: 'Workspace' }, acknowledged);
+    item = center.state()[0];
+    center.resolve(item.id, item.version, { optionId: 'deny' }, { id: 'browser', name: 'Grace' });
+    assert.deepEqual(await retry, { optionId: 'deny' });
+    await new Promise((resolve) => setImmediate(resolve));
+    center.settle({ worker: worker(), floorId: 'f1', floorName: 'Workspace' }, { correlationId: 'sdk-ack', ok: true, status: 'denied', decision: 'deny' });
+    assert.equal(center.state()[0].status, 'denied');
+    assert.ok(updates.some((entry) => entry.status === 'error'));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

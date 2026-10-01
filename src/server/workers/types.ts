@@ -7,7 +7,7 @@ import type { Pty } from '../ptys.js';
 import type { UsageTracker } from '../usage.js';
 import type { Worktrees } from '../worktrees.js';
 import type { HeadlessTerminal } from './terminal.js';
-import type { ProviderInteractionDraft } from '../interactions.js';
+import type { ProviderInteractionDraft, ProviderInteractionResult } from '../interactions.js';
 
 export type Worktree = NonNullable<WorkerInfo['worktree']>;
 
@@ -113,6 +113,7 @@ export interface WorkerEvents {
   toast(text: string, level: 'info' | 'warn' | 'error'): void;
   /** A structured provider callback waits here until a browser answers it. */
   interact?(info: WorkerInfo, request: ProviderInteractionDraft): Promise<unknown>;
+  settleInteraction?(info: WorkerInfo, result: ProviderInteractionResult): void;
   /** No active callback may remain actionable after this worker is gone. */
   cancelInteractions?(workerId: string): void;
 }

@@ -7,7 +7,7 @@ import { reportedUsage } from '../reported-usage.js';
 import type { WorkerHandle } from '../workers/types.js';
 import { truncate } from '../workers/util.js';
 import type { ProviderAdapter } from './types.js';
-import { interactionResource, redactInteractionText, type ProviderInteractionDraft } from '../interactions.js';
+import { interactionResource, redactInteractionText, type ProviderInteractionDraft, type ProviderInteractionResult } from '../interactions.js';
 
 /** What a worker that reports statuses (OpenCode's plugin, Pi's extension) keeps of them. */
 export interface StatusState {
@@ -66,6 +66,7 @@ export function openCodeInteraction(payload: unknown): ProviderInteractionDraft 
     const resource = interactionResource(permission, { description: patterns.join('\n') || JSON.stringify(metadata) });
     return {
       correlationId,
+      awaitProviderAck: true,
       kind: 'permission',
       title: `${permission} needs permission`,
       prompt: `Allow OpenCode to use ${permission}?`,
@@ -102,6 +103,7 @@ export function openCodeInteraction(payload: unknown): ProviderInteractionDraft 
   if (!fields.length) return undefined;
   return {
     correlationId,
+    awaitProviderAck: true,
     kind: 'question',
     title: fields.length === 1 ? fields[0].label : `${fields.length} questions`,
     prompt: fields.map((field) => field.prompt).join('\n'),
@@ -118,9 +120,25 @@ export function openCodeInteraction(payload: unknown): ProviderInteractionDraft 
   };
 }
 
+/** OpenCode confirms the SDK call separately from the original blocking hook response. */
+export function openCodeInteractionResult(payload: unknown): ProviderInteractionResult | undefined {
+  if (!rec(payload) || payload.type !== 'interaction-result' || typeof payload.sessionId !== 'string' || typeof payload.requestId !== 'string') return undefined;
+  const requestType = payload.requestType === 'permission' || payload.requestType === 'question' ? payload.requestType : undefined;
+  if (!requestType || typeof payload.ok !== 'boolean') return undefined;
+  const status = payload.status === 'denied' || payload.status === 'cancelled' || payload.status === 'resolved' ? payload.status : undefined;
+  return {
+    correlationId: `${payload.sessionId}:${requestType}:${payload.requestId}`,
+    ok: payload.ok,
+    ...(status ? { status } : {}),
+    ...(typeof payload.decision === 'string' ? { decision: payload.decision } : {}),
+    ...(typeof payload.error === 'string' ? { error: payload.error } : {}),
+  };
+}
+
 /** OpenCode plugin callback. The plugin has already filtered child sessions before this bridge. */
 function openCodeHook(h: WorkerHandle<StatusState>, _event: string, payload: unknown): boolean {
   const { info } = h;
+  if (rec(payload) && payload.type === 'interaction-result') return !!openCodeInteractionResult(payload);
   if (payload && typeof payload === 'object' && 'type' in payload && payload.type === 'usage') {
     const report = payload as { sessionId?: unknown; usage?: unknown };
     const usage = reportedUsage(report.usage);
@@ -194,6 +212,11 @@ export const opencode: ProviderAdapter<StatusState, OpenCodeSetup> = {
       },
     };
   },
-  hook: { strictJson: true, handle: openCodeHook, interaction: (_h, _event, payload) => openCodeInteraction(payload) },
+  hook: {
+    strictJson: true,
+    handle: openCodeHook,
+    interaction: (_h, _event, payload) => openCodeInteraction(payload),
+    interactionResult: (_h, _event, payload) => openCodeInteractionResult(payload),
+  },
   usage: { persisted: true },
 };

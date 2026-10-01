@@ -121,6 +121,7 @@ export async function openFloors(ctx: Ctx, hookPort: number): Promise<FloorsOpen
       const response = await ctx.interactions.request({ worker, floorId: floor.id, floorName: floor.def.name }, request);
       return request.respond(response);
     },
+    settleInteraction: (floor, worker, result) => ctx.interactions.settle({ worker, floorId: floor.id, floorName: floor.def.name }, result),
     cancelInteractions: (workerId) => ctx.interactions.expireWorker(workerId, 'cancelled'),
     runAs: ctx.signins,
     ghAs: (owner) => (owner ? ctx.signins.ghAs(owner) : undefined),

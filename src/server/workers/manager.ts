@@ -579,6 +579,8 @@ export class WorkerManager {
     const own = w && providerAdapter(w.info.provider);
     if (!hook || !w || !w.pty || w.info.kind !== 'agent' || !own || (own.hooksAs ?? own.id) !== route || !safeEq(token, w.hookToken)) return { ok: false };
     if (!hook.handle(this.handleOf(w), event, payload)) return { ok: false };
+    const result = hook.interactionResult?.(this.handleOf(w), event, payload);
+    if (result) return (this.events.settleInteraction?.({ ...w.info }, result), { ok: true });
     const draft = hook.interaction?.(this.handleOf(w), event, payload);
     if (!draft) return { ok: true };
     if (draft.kind === 'unsupported') {

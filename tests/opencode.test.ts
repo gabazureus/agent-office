@@ -34,6 +34,7 @@ test('writes a loadable plugin module that forwards root events and excludes sub
   const oldWorker = process.env.AGENT_OFFICE_WORKER_ID;
   const oldSession = process.env.AGENT_OFFICE_SESSION_ID;
   const sent: unknown[] = [];
+  const replies: unknown[] = [];
   try {
     const file = writeOpenCodePlugin(dir);
     process.env.AGENT_OFFICE_HOOK_URL = 'http://127.0.0.1:1';
@@ -41,8 +42,10 @@ test('writes a loadable plugin module that forwards root events and excludes sub
     process.env.AGENT_OFFICE_WORKER_ID = 'worker';
     process.env.AGENT_OFFICE_SESSION_ID = 'ses_existing';
     globalThis.fetch = (async (_url, init) => {
-      sent.push(JSON.parse(String(init?.body)));
-      return new Response(null, { status: 200 });
+      const body = JSON.parse(String(init?.body));
+      sent.push(body);
+      const response = body.type === 'permission' ? { reply: 'once' } : body.type === 'question' ? { answers: [['one.ts']] } : {};
+      return new Response(JSON.stringify(response), { status: 200, headers: { 'content-type': 'application/json' } });
     }) as typeof fetch;
     const mod = await import(`${pathToFileURL(file).href}?test=${Date.now()}`) as { default: (ctx?: unknown) => Promise<any> };
     const hooks = await mod.default({});
@@ -85,10 +88,17 @@ test('writes a loadable plugin module that forwards root events and excludes sub
 
     // Selecting an existing root conversation emits no session.created event. Verify it through
     // the SDK before adopting it, and serialize that lookup with subsequent busy/idle events.
-    const selected = await mod.default({ client: { session: { get: async ({ path }: any) => {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      return { data: { id: path.id, ...(path.id === 'child' ? { parentID: 'parent' } : {}) } };
-    } } } });
+    const selected = await mod.default({ client: {
+      session: { get: async ({ path }: any) => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return { data: { id: path.id, ...(path.id === 'child' ? { parentID: 'parent' } : {}) } };
+      } },
+      permission: { reply: async (value: unknown) => void replies.push(value) },
+      question: {
+        reply: async (value: unknown) => void replies.push(value),
+        reject: async (value: unknown) => void replies.push(value),
+      },
+    } });
     sent.length = 0;
     await Promise.all([
       selected['chat.message']({ sessionID: 'saved' }, { parts: [{ type: 'text', text: 'continue here' }] }),
@@ -110,6 +120,12 @@ test('writes a loadable plugin module that forwards root events and excludes sub
     const event = (type: string, properties: Record<string, unknown>) => selected.event({ event: { type, properties: { sessionID: 'saved', ...properties } } });
     await event('permission.asked', { id: 'permission-1', permission: 'edit' });
     await event('question.asked', { id: 'question-1', questions: [{ question: 'Which file?' }] });
+    assert.deepEqual(replies, [
+      { requestID: 'permission-1', reply: 'once' },
+      { requestID: 'question-1', answers: [['one.ts']] },
+    ]);
+    assert.ok(sent.some((value: any) => value.type === 'interaction-result' && value.requestId === 'permission-1' && value.ok === true));
+    assert.ok(sent.some((value: any) => value.type === 'interaction-result' && value.requestId === 'question-1' && value.ok === true));
     await event('permission.replied', { requestID: 'permission-1', reply: 'once' });
     assert.equal((sent.at(-1) as any).status, 'needs_input');
     await event('question.replied', { requestID: 'question-1', answers: [['one.ts']] });
