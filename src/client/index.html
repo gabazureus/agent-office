@@ -35,9 +35,14 @@
       <div id="hud">
         <div id="compass"></div>
         <header class="topbar">
-          <div class="project panel" id="project" role="button" tabindex="-1" title="Floors: go to another project">
-            <div class="project-name"><span id="project-name">Agent Office</span><span id="floors-waiting" class="svc-count hidden"></span></div>
-            <div class="project-meta" id="project-meta"></div>
+          <div class="project-tools">
+            <div class="project panel" id="project" role="button" tabindex="-1" title="Floors: go to another project">
+              <div class="project-name"><span id="project-name">Agent Office</span><span id="floors-waiting" class="svc-count hidden"></span></div>
+              <div class="project-meta" id="project-meta"></div>
+            </div>
+            <button id="environment-summary" class="btn environment-summary-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" title="Environment summary">
+              <span aria-hidden="true">📊</span><span class="label">Summary</span>
+            </button>
           </div>
           <!-- Filled by ui/menu.ts: pinned actions, what needs you right now, and the ☰ menu with everything else. -->
           <nav id="dock" class="dock" aria-label="Office"></nav>

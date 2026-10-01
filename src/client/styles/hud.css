@@ -9,12 +9,15 @@
 
 .topbar { position: absolute; top: 12px; left: 12px; right: 12px; display: flex; gap: 12px; justify-content: space-between; align-items: flex-start; pointer-events: none; }
 .topbar > * { pointer-events: auto; }
+.project-tools { display: flex; align-items: flex-start; gap: 8px; min-width: 0; max-width: min(62vw, 760px); }
 .project { padding: 8px 14px; min-width: 0; max-width: 40vw; cursor: pointer; }
 .project-name { display: flex; align-items: center; }
 .project-name #project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .project:hover { background: var(--paper-2); }
 .project-name { font-weight: 900; font-size: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .project-meta { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.environment-summary-trigger { min-height: 44px; padding-inline: 11px; }
+.environment-summary-trigger[aria-expanded=true] { background: var(--paper-2); transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
 /* The dock: what you pinned, what needs you now, the workers, and the ☰ menu (ui/menu.ts). */
 .dock { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0; max-width: 100%; }
 .dock-btn { height: 44px; padding: 0 12px; font-size: 17px; gap: 6px; }
@@ -212,6 +215,9 @@ body.telescope-active #hud { visibility: hidden; }
 .modal.viewer video { width: 100%; max-height: calc(100vh - 120px); background: #111; display: block; }
 
 @media (max-width: 800px) {
+  .project-tools { max-width: calc(100vw - 84px); }
+  .project { max-width: calc(100vw - 136px); }
+  .environment-summary-trigger .label { display: none; }
   .side { width: min(250px, calc(100vw - 24px)); max-height: calc(100vh - 290px); }
   .dock-btn .lbl { display: none; }
   .hint { max-width: calc(100vw - 24px); bottom: 190px; }
