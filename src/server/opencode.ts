@@ -109,6 +109,17 @@ export const OPENCODE_PLUGIN_SOURCE = String.raw`export default async function A
     return typeof value === "string" && value.trim() ? value.trim().slice(0, 500) : undefined;
   }
   async function providerReply(path, body) {
+    const transport = client && client._client;
+    if (transport && typeof transport.post === "function") {
+      const result = await transport.post({
+        url: path,
+        ...(directory ? { query: { directory } } : {}),
+        ...(body === undefined ? {} : { body }),
+        headers: body === undefined ? {} : { "content-type": "application/json" },
+      });
+      if (result && (result.error || result.data === false || (result.response && !result.response.ok))) throw new Error("OpenCode rejected the response");
+      return;
+    }
     const target = new URL(path, serverUrl);
     if (directory) target.searchParams.set("directory", directory);
     const headers = {};

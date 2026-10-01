@@ -41,12 +41,7 @@ test('writes a loadable plugin module that forwards root events and excludes sub
     process.env.AGENT_OFFICE_HOOK_TOKEN = 'token';
     process.env.AGENT_OFFICE_WORKER_ID = 'worker';
     process.env.AGENT_OFFICE_SESSION_ID = 'ses_existing';
-    globalThis.fetch = (async (url, init) => {
-      const target = new URL(String(url));
-      if (target.hostname === 'opencode.test') {
-        replies.push({ path: target.pathname, directory: target.searchParams.get('directory'), body: init?.body ? JSON.parse(String(init.body)) : undefined });
-        return new Response('true', { status: 200, headers: { 'content-type': 'application/json' } });
-      }
+    globalThis.fetch = (async (_url, init) => {
       const body = JSON.parse(String(init?.body));
       sent.push(body);
       const response = body.type === 'permission' ? { reply: 'once' } : body.type === 'question' ? { answers: [['one.ts']] } : {};
@@ -96,10 +91,16 @@ test('writes a loadable plugin module that forwards root events and excludes sub
     const selected = await mod.default({
       serverUrl: new URL('http://opencode.test:4096'),
       directory: '/repo with spaces',
-      client: { session: { get: async ({ path }: any) => {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        return { data: { id: path.id, ...(path.id === 'child' ? { parentID: 'parent' } : {}) } };
-      } } },
+      client: {
+        _client: { post: async (value: any) => {
+          replies.push({ path: value.url, directory: value.query?.directory, body: value.body });
+          return { data: true, response: new Response('true', { status: 200 }) };
+        } },
+        session: { get: async ({ path }: any) => {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          return { data: { id: path.id, ...(path.id === 'child' ? { parentID: 'parent' } : {}) } };
+        } },
+      },
     });
     sent.length = 0;
     await Promise.all([
