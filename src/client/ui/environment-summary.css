@@ -1,4 +1,16 @@
 /* The live floor summary: a non-blocking native window over the office, opened beside its name. */
+.project-tools { display: flex; align-items: flex-start; gap: 8px; min-width: 0; max-width: min(62vw, 760px); }
+.btn.environment-summary-trigger {
+  min-height: 44px;
+  padding-inline: 11px;
+  border: 0;
+  box-shadow: none;
+}
+.btn.environment-summary-trigger:hover { background: var(--paper-2); }
+.btn.environment-summary-trigger:focus { outline: none; }
+.btn.environment-summary-trigger:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.btn.environment-summary-trigger:active,
+.btn.environment-summary-trigger[aria-expanded=true] { background: var(--paper-2); transform: translateY(2px); box-shadow: none; }
 .environment-backdrop {
   display: block;
   padding: 72px 16px 16px;
@@ -79,6 +91,9 @@
 .environment-empty.major { min-height: 260px; }
 
 @media (max-width: 760px) {
+  .project-tools { max-width: calc(100vw - 84px); }
+  .project { max-width: calc(100vw - 136px); }
+  .environment-summary-trigger .label { display: none; }
   .environment-backdrop { padding: 70px 8px 8px; }
   .environment-panel { max-height: calc(100vh - 78px); }
   .environment-panel > header { padding: 9px 10px; }

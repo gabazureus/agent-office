@@ -28,6 +28,20 @@ test('summary button is immediately beside the floor control and never routes th
   assert.doesNotMatch(source, /openServices|serviceUrl|location\.assign|window\.open/);
 });
 
+test('summary trigger has no decorative border but keeps a keyboard-only focus ring', () => {
+  const css = readFileSync(new URL('../src/client/ui/environment-summary.css', import.meta.url), 'utf8');
+  const base = css.match(/\.btn\.environment-summary-trigger\s*\{([^}]*)\}/)?.[1] ?? '';
+  const pointerFocus = css.match(/\.btn\.environment-summary-trigger:focus\s*\{([^}]*)\}/)?.[1] ?? '';
+  const keyboardFocus = css.match(/\.btn\.environment-summary-trigger:focus-visible\s*\{([^}]*)\}/)?.[1] ?? '';
+  const pressed = css.match(/\.btn\.environment-summary-trigger:active,\s*\.btn\.environment-summary-trigger\[aria-expanded=true\]\s*\{([^}]*)\}/)?.[1] ?? '';
+
+  assert.match(base, /border:\s*0\s*;/);
+  assert.match(base, /box-shadow:\s*none\s*;/);
+  assert.match(pointerFocus, /outline:\s*none\s*;/);
+  assert.match(keyboardFocus, /outline:\s*3px solid var\(--accent\)\s*;/);
+  assert.match(pressed, /box-shadow:\s*none\s*;/);
+});
+
 test('summary opens and closes from its button, close control and Escape', async () => {
   const { document, window } = installDom();
   const [{ toggleEnvironmentSummary }, { store }] = await Promise.all([import('../src/client/ui/environment-summary'), import('../src/client/state')]);
