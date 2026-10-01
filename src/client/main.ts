@@ -61,6 +61,7 @@ import { installWalking } from './features/walking';
 import { installWhiteboard } from './features/whiteboard';
 import { installWorkerActions } from './features/workers/actions';
 import { installWorkerViews } from './features/workers/views';
+import { InteractionDock } from './ui/interactions';
 
 // The loading screen stays up until there's an office to see (see boot and whoami at the end).
 const loading = loadingScreen(onModelsProgress);
@@ -103,6 +104,8 @@ parts.rooftop = installRooftop(ctx, { ambient: parts.stage.ambient, hemi: parts.
 
 // You, and how you talk to the office.
 parts.net = new Net(() => store.profile, () => parts.arrival.whereNow());
+const interactionDock = new InteractionDock($('interaction-root'), (message) => parts.net.send(message));
+ctx.messages.onAny((message) => interactionDock.handle(message));
 parts.voice = new Voice(parts.net);
 parts.me = makeMe(ctx);
 parts.settings = loadSettings();

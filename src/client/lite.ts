@@ -27,6 +27,7 @@ import { modelBadge, providerLabel } from './ui/provider';
 import { byUrgency, waitingInOrder, waitingLabel } from './nextup';
 import { askNotifyPermission, DesktopNotifier, notifyPermission, waitingOnSomeone } from './notify';
 import { repoChoices } from './shared/hiring';
+import { InteractionDock } from './ui/interactions';
 // The tab title counts the workers waiting on someone, on every floor, as the 3D office's does.
 import { renderTitle } from './shared/title';
 
@@ -41,6 +42,7 @@ if (new URLSearchParams(location.search).get('why') === 'webgl') {
 const saved = loadProfile();
 store.profile = { name: saved?.name ?? 'Guest', color: saved?.color ?? AVATAR_COLORS[1], look: saved?.look ?? randomLook() };
 const net = new Net(() => store.profile, () => null, true);
+const interactionDock = new InteractionDock($('interaction-root'), (message) => net.send(message));
 const settings = loadSettings();
 const notifier = new DesktopNotifier(() => settings.notify, (id) => openWorker(id));
 
@@ -49,6 +51,7 @@ let bootVersion = '';
 
 net.onStatus((up) => $('conn').classList.toggle('hidden', up));
 net.onMessage((msg) => {
+  interactionDock.handle(msg);
   store.apply(msg);
   routeTerminalMessage(msg);
   routeChangesMessage(msg);

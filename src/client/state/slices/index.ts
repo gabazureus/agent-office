@@ -17,6 +17,7 @@ import { decor } from './decor';
 import { dog } from './dog';
 import { floorPlan } from './floor-plan';
 import { jail } from './jail';
+import { interactions } from './interactions';
 import { jukebox } from './jukebox';
 import { leaveOnMerge } from './leave-on-merge';
 import { machine } from './machine';
@@ -46,6 +47,7 @@ export const SLICES: readonly Slice[] = [
   prompts,
   leaveOnMerge,
   map,
+  interactions,
   floor,
   meeting,
   decor,
